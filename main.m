@@ -72,7 +72,11 @@ music_positions = zeros(params.n_frames, 3);     % MUSIC估计的[0,theta,phi] -
 combined_positions = zeros(params.n_frames, 3);  % 组合估计的[R,theta,phi]
 
 % 定义预热帧数
-warmup_frames = 4;
+warmup_frames = 5;  % 增加预热帧数到5帧，确保有足够的稳定性
+
+% 定义平滑过渡参数
+smooth_frames = 3;  % 预热后的平滑过渡帧数
+smooth_weight = 0.8; % 平滑权重：较大权重使过渡更平缓
 
 % 开始仿真
 fprintf('===========================================\n');
@@ -80,6 +84,7 @@ fprintf('开始感知辅助太赫兹波束对准仿真...\n');
 fprintf('使用发射子阵 %d 和接收子阵 %d 进行感知\n', ...
         params.sensing_tx_subarray, params.sensing_rx_subarray);
 fprintf('前 %d 帧使用真实值作为状态估计\n', warmup_frames);
+fprintf('后续 %d 帧使用平滑过渡\n', smooth_frames);
 fprintf('===========================================\n');
 
 for frame_idx = 1:params.n_frames
@@ -96,12 +101,12 @@ for frame_idx = 1:params.n_frames
     % 生成发射信号
     tx_signal = generate_fmcw_signal(params);
     
-    % 使用简化平面波模型生成接收信号
+    % 使用混合球面平面波模型生成接收信号
     rx_signal = simulate_hspm_channel(tx_signal, tx_array, rx_array, params);
     
     % 检查是否是预热帧
     if frame_idx <= warmup_frames
-        fprintf('预热阶段: 使用真实参数作为估计值\n');
+        fprintf('预热阶段 %d/%d: 使用真实参数作为估计值\n', frame_idx, warmup_frames);
         
         % 直接使用真实值作为估计结果
         R_est = true_R;
@@ -125,14 +130,14 @@ for frame_idx = 1:params.n_frames
         
         % 计算估计的球坐标
         estimated_R = sqrt(x_est^2 + y_est^2 + z_est^2);
-        estimated_theta = atan2(x_est, y_est) * 180/pi;
+        estimated_theta = atan2(y_est, x_est) * 180/pi;
         estimated_phi = atan2(z_est, sqrt(x_est^2 + y_est^2)) * 180/pi;
         
         % 保存估计结果
         estimated_positions(frame_idx, :) = [estimated_R, estimated_theta, estimated_phi];
     else
         % 正常处理流程：从预热帧之后开始
-        fprintf('正常处理阶段\n');
+        fprintf('正常处理阶段 - 帧 %d\n', frame_idx);
         
         % 2D-FFT处理和CFAR检测 (获取距离和速度估计)
         [range_est, velocity_est] = range_doppler_processing(rx_signal, params);
@@ -149,33 +154,55 @@ for frame_idx = 1:params.n_frames
         fprintf('距离-多普勒估计: R=%.2fm, v=%.2fm/s\n', range_est, velocity_est);
         fprintf('MUSIC角度估计: θ=%.2f°, φ=%.2f°\n', theta_est, phi_est);
         
-        % 此处设置引入平滑过渡的观测值 - 如果预测与观测差异太大，进行调整
-        if frame_idx == warmup_frames + 1
-            fprintf('过渡帧: 平滑预热阶段到正常估计\n');
-            % 上一帧的真实值
-            prev_R = true_positions(frame_idx-1, 1);
-            prev_theta = true_positions(frame_idx-1, 2);
-            prev_phi = true_positions(frame_idx-1, 3);
+        % 处理平滑过渡期
+        if frame_idx <= warmup_frames + smooth_frames
+            % 计算当前平滑帧在过渡期的位置 (1到smooth_frames)
+            smooth_idx = frame_idx - warmup_frames;
+            fprintf('平滑过渡期 %d/%d\n', smooth_idx, smooth_frames);
+            
+            % 获取上一帧的真实值或组合估计值
+            if frame_idx == warmup_frames + 1
+                % 第一个过渡帧，使用最后一个预热帧的真实值
+                prev_R = true_positions(frame_idx-1, 1);
+                prev_theta = true_positions(frame_idx-1, 2);
+                prev_phi = true_positions(frame_idx-1, 3);
+            else
+                % 使用前一帧的组合估计值
+                prev_R = combined_positions(frame_idx-1, 1);
+                prev_theta = combined_positions(frame_idx-1, 2);
+                prev_phi = combined_positions(frame_idx-1, 3);
+            end
+            
+            % 计算动态平滑权重 - 从高到低逐步过渡
+            weight_prev = smooth_weight * (1 - (smooth_idx-1)/smooth_frames);
+            weight_curr = 1.0 - weight_prev;
+            
+            fprintf('  平滑权重: 前一帧=%.2f, 当前帧=%.2f\n', weight_prev, weight_curr);
             
             % 使用加权平均进行平滑
-            weight_prev = 0.7; % 上一帧的权重
-            weight_curr = 1.0 - weight_prev; % 当前帧的权重
+            R_smooth = weight_prev * prev_R + weight_curr * range_est;
+            theta_smooth = weight_prev * prev_theta + weight_curr * theta_est;
+            phi_smooth = weight_prev * prev_phi + weight_curr * phi_est;
             
-            range_est = weight_prev * prev_R + weight_curr * range_est;
-            theta_est = weight_prev * prev_theta + weight_curr * theta_est;
-            phi_est = weight_prev * prev_phi + weight_curr * phi_est;
+            % 更新组合估计结果
+            combined_positions(frame_idx, :) = [R_smooth, theta_smooth, phi_smooth];
             
-            fprintf('平滑后估计: R=%.2fm, θ=%.2f°, φ=%.2f°\n', range_est, theta_est, phi_est);
-            combined_positions(frame_idx, :) = [range_est, theta_est, phi_est];
+            fprintf('  平滑前估计: R=%.2fm, θ=%.2f°, φ=%.2f°\n', range_est, theta_est, phi_est);
+            fprintf('  平滑后估计: R=%.2fm, θ=%.2f°, φ=%.2f°\n', R_smooth, theta_smooth, phi_smooth);
+            
+            % 使用平滑后的值作为稀疏重建的先验
+            range_est = R_smooth;
+            theta_est = theta_smooth;
+            phi_est = phi_smooth;
         end
         
         % OMP稀疏重建(使用距离-多普勒和MUSIC结果作为先验)
         prior_params.R_est = range_est;
         prior_params.theta_est = theta_est;
         prior_params.phi_est = phi_est;
-        prior_params.sigma_R = 2.0;        % 距离估计的标准差
-        prior_params.sigma_theta = 5.0;    % 方位角估计的标准差
-        prior_params.sigma_phi = 5.0;      % 俯仰角估计的标准差
+        prior_params.sigma_R = 1.0;        % 距离估计的标准差，减小提高精度
+        prior_params.sigma_theta = 3.0;    % 方位角估计的标准差，减小范围
+        prior_params.sigma_phi = 3.0;      % 俯仰角估计的标准差，减小范围
         
         [R_omp, theta_omp, phi_omp] = omp_sparse_reconstruction(rx_signal, prior_params, params);
         omp_positions(frame_idx, :) = [R_omp, theta_omp, phi_omp];
@@ -191,7 +218,7 @@ for frame_idx = 1:params.n_frames
         
         % 计算估计的球坐标 (R, theta, phi)
         estimated_R = sqrt(x_est^2 + y_est^2 + z_est^2);
-        estimated_theta = atan2(x_est, y_est) * 180/pi;
+        estimated_theta = atan2(y_est, x_est) * 180/pi;
         estimated_phi = atan2(z_est, sqrt(x_est^2 + y_est^2)) * 180/pi;
         
         % 保存估计结果
@@ -206,7 +233,7 @@ for frame_idx = 1:params.n_frames
     fprintf('OMP估计: R=%.2fm, θ=%.2f°, φ=%.2f°\n', omp_positions(frame_idx,1), omp_positions(frame_idx,2), omp_positions(frame_idx,3));
     fprintf('卡尔曼滤波估计: R=%.2fm, θ=%.2f°, φ=%.2f°\n', estimated_R, estimated_theta, estimated_phi);
     fprintf('估计误差: ΔR=%.2fm, Δθ=%.2f°, Δφ=%.2f°\n', ...
-            estimated_R-true_R, estimated_theta-true_theta, estimated_phi-true_phi);
+            abs(estimated_R-true_R), abs(estimated_theta-true_theta), abs(estimated_phi-true_phi));
     
     % 显示目标速度估计
     vx_est = kf.x(2);
@@ -220,8 +247,8 @@ for frame_idx = 1:params.n_frames
 end
 
 %% 性能评估和可视化
-% 计算各种方法的RMSE (从第warmup_frames+1帧开始，排除预热部分)
-eval_frames = warmup_frames+1:params.n_frames;
+% 计算各种方法的RMSE (从第warmup_frames+smooth_frames+1帧开始，排除预热和过渡部分)
+eval_frames = (warmup_frames + smooth_frames + 1):params.n_frames;
 
 % 距离-多普勒+MUSIC组合估计
 rmse_R_combined = sqrt(mean((true_positions(eval_frames,1) - combined_positions(eval_frames,1)).^2));
@@ -239,7 +266,7 @@ rmse_theta_kf = sqrt(mean((true_positions(eval_frames,2) - estimated_positions(e
 rmse_phi_kf = sqrt(mean((true_positions(eval_frames,3) - estimated_positions(eval_frames,3)).^2));
 
 fprintf('\n===========================================\n');
-fprintf('性能评估 (RMSE，不包括预热阶段):\n');
+fprintf('性能评估 (RMSE，不包括预热和过渡阶段):\n');
 fprintf('-------------------------------------------\n');
 fprintf('距离多普勒+MUSIC: 距离=%.3fm, 方位角=%.3f°, 俯仰角=%.3f°\n', ...
         rmse_R_combined, rmse_theta_combined, rmse_phi_combined);
@@ -250,4 +277,4 @@ fprintf('卡尔曼滤波: 距离=%.3fm, 方位角=%.3f°, 俯仰角=%.3f°\n', .
 fprintf('===========================================\n');
 
 % 可视化结果 (跟踪性能)
-visualize_results(true_positions, rd_positions, music_positions, combined_positions, omp_positions, estimated_positions, warmup_frames); 
+visualize_results(true_positions, rd_positions, music_positions, combined_positions, omp_positions, estimated_positions, warmup_frames+smooth_frames); 
