@@ -17,15 +17,15 @@ R_init = params.initial_R;
 theta_init = params.initial_theta * pi/180; % 转为弧度
 phi_init = params.initial_phi * pi/180;   % 转为弧度
 
-% 计算笛卡尔坐标下的位置
-x_init = R_init * cos(phi_init) * sin(theta_init);
-y_init = R_init * cos(phi_init) * cos(theta_init);
+% 计算笛卡尔坐标下的位置 - 使用标准定义的角度转换
+x_init = R_init * cos(phi_init) * cos(theta_init);
+y_init = R_init * cos(phi_init) * sin(theta_init);
 z_init = R_init * sin(phi_init);
 
-% 初始速度估计 (可以使用先验知识设置)
-vx_init = 5.0;  % x方向初始速度
-vy_init = 3.0;  % y方向初始速度 
-vz_init = 2.0;  % z方向初始速度
+% 初始速度估计 - 设置为与实际接收端速度接近的值
+vx_init = 12.0;  % x方向初始速度
+vy_init = -10.0; % y方向初始速度 
+vz_init = 8.0;   % z方向初始速度
 
 % 初始加速度估计
 ax_init = 0.0;  % x方向初始加速度
@@ -62,10 +62,10 @@ F(4:6, 4:6) = Fy;
 F(7:9, 7:9) = Fz;
 
 % 过程噪声协方差矩阵
-% 定义加速度过程噪声标准差 - 设置更大的值以适应更大的速度变化
-sigma_ax = 2.0;  % x方向加速度标准差 (m/s²)
-sigma_ay = 2.0;  % y方向加速度标准差 (m/s²)
-sigma_az = 2.0;  % z方向加速度标准差 (m/s²)
+% 定义加速度过程噪声标准差 - 增大以适应高速场景和可能的加速度变化
+sigma_ax = 10.0;  % x方向加速度标准差 (m/s²)
+sigma_ay = 10.0;  % y方向加速度标准差 (m/s²)
+sigma_az = 10.0;  % z方向加速度标准差 (m/s²)
 
 fprintf('  过程噪声标准差(加速度): [%.2f, %.2f, %.2f]m/s²\n', sigma_ax, sigma_ay, sigma_az);
 
@@ -95,30 +95,30 @@ H = zeros(3, n_states);
 % 观测模型：[距离; 方位角; 俯仰角] = h(x, y, z)
 % 将会在kalman_filter_update中使用雅可比行列式计算非线性观测矩阵
 
-% 观测噪声协方差矩阵
-sigma_r = 1.0;      % 距离观测标准差 (m)
-sigma_theta = 5.0 * pi/180;  % 方位角观测标准差 (rad)
-sigma_phi = 5.0 * pi/180;    % 俯仰角观测标准差 (rad)
+% 观测噪声协方差矩阵 - 适当减小以提高灵敏度
+sigma_r = 0.5;      % 距离观测标准差 (m)
+sigma_theta = 3.0 * pi/180;  % 方位角观测标准差 (rad)
+sigma_phi = 3.0 * pi/180;    % 俯仰角观测标准差 (rad)
 
 fprintf('  观测噪声标准差: 距离=%.2fm, 方位角=%.2f°, 俯仰角=%.2f°\n', ...
        sigma_r, sigma_theta*180/pi, sigma_phi*180/pi);
 
 R = diag([sigma_r^2, sigma_theta^2, sigma_phi^2]);
 
-% 初始状态估计协方差矩阵
+% 初始状态估计协方差矩阵 - 增大初始不确定性
 P0 = zeros(n_states, n_states);
 % 位置初始不确定性
-P0(1,1) = 5.0^2;  % x位置方差
-P0(4,4) = 5.0^2;  % y位置方差
-P0(7,7) = 5.0^2;  % z位置方差
+P0(1,1) = 10.0^2;  % x位置方差
+P0(4,4) = 10.0^2;  % y位置方差
+P0(7,7) = 10.0^2;  % z位置方差
 % 速度初始不确定性
-P0(2,2) = 2.0^2;  % x速度方差
-P0(5,5) = 2.0^2;  % y速度方差
-P0(8,8) = 2.0^2;  % z速度方差
+P0(2,2) = 5.0^2;   % x速度方差
+P0(5,5) = 5.0^2;   % y速度方差
+P0(8,8) = 5.0^2;   % z速度方差
 % 加速度初始不确定性
-P0(3,3) = 1.0^2;  % x加速度方差
-P0(6,6) = 1.0^2;  % y加速度方差
-P0(9,9) = 1.0^2;  % z加速度方差
+P0(3,3) = 2.0^2;   % x加速度方差
+P0(6,6) = 2.0^2;   % y加速度方差
+P0(9,9) = 2.0^2;   % z加速度方差
 
 % 创建卡尔曼滤波器结构
 kf = struct();
